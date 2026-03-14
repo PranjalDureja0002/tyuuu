@@ -845,31 +845,43 @@ Return ONLY JSON."""
         else:
             md_table = "_No data_"
 
-        # Build output message
-        parts = [
-            f"**Query Results** ({len(rows)} rows, {exec_ms}ms)\n",
-            f"**SQL:**\n```sql\n{sql}\n```\n",
-            md_table,
-        ]
+        # ── Format numbers for display ──
+        def _fmt(val):
+            if val is None:
+                return "—"
+            if isinstance(val, float):
+                if abs(val) >= 1_000_000:
+                    return f"{val:,.2f}"
+                elif abs(val) >= 1:
+                    return f"{val:,.2f}"
+                else:
+                    return f"{val:.4f}"
+            if isinstance(val, int) and abs(val) >= 1000:
+                return f"{val:,}"
+            return str(val)
 
-        if all_fixes:
-            parts.append("\n**Auto-Fixes:**")
-            for f in all_fixes:
-                parts.append(f"- {f}")
+        # ── Build markdown table with formatted values ──
+        if columns and rows:
+            fmt_rows = [[_fmt(v) for v in row] for row in rows]
+            cw = [len(str(c)) for c in columns]
+            for row in fmt_rows:
+                for i, val in enumerate(row):
+                    cw[i] = max(cw[i], len(val))
+            header = "| " + " | ".join(str(c).ljust(cw[i]) for i, c in enumerate(columns)) + " |"
+            sep = "|" + "|".join(":" + "-" * (w) + ":" for w in cw) + "|"
+            data_rows = []
+            for row in fmt_rows:
+                cells = [v.ljust(cw[i]) for i, v in enumerate(row)]
+                data_rows.append("| " + " | ".join(cells) + " |")
+            md_table = "\n".join([header, sep] + data_rows)
+        else:
+            md_table = ""
 
-        if post_warnings:
-            parts.append("\n**Data Notes:**")
-            for w in post_warnings:
-                parts.append(f"- {w}")
-
-        # Raw data JSON for Data Visualizer
+        # ── Raw data JSON (for downstream components) ──
         rows_list = [list(r) for r in rows]
         data_json = json.dumps({"columns": columns, "rows": rows_list}, default=str)
-        parts.append(f"\n<data_json>{data_json}</data_json>")
 
-        # Pipeline trace
-        parts.append("\n---\n**Pipeline Trace**\n")
-
+        # ── Pipeline trace (metadata) ──
         raw_q = ctx.get("raw_query", "")
         norm_q = ctx.get("normalized_query", raw_q)
         normalizer = ctx.get("normalizer", {})
@@ -880,42 +892,67 @@ Return ONLY JSON."""
         n_ex = ctx.get("selected_examples_count", 0)
         tot_ex = ctx.get("total_examples_count", 0)
 
-        parts.append("**1. Query Analysis** (CODE)")
-        if raw_q != norm_q:
-            parts.append(f"- Original: `{raw_q}`")
-            parts.append(f"- Normalized: `{norm_q}`")
+        # ── Build RESULTS section (what the Worker LLM should show to user) ──
+        parts = []
+
+        if rows:
+            parts.append(md_table)
+            parts.append(f"\n*{len(rows)} row{'s' if len(rows) != 1 else ''} returned in {exec_ms}ms*")
         else:
-            parts.append(f"- Query: `{raw_q}`")
-        exps = normalizer.get("expansions", [])
-        if exps:
-            parts.append(f"- Expansions: {', '.join(str(e) for e in exps)}")
-        aliases = normalizer.get("alias_resolutions", [])
-        for a in aliases:
-            parts.append(f"- Alias: `{a.get('alias','')}` -> `{a.get('sql_filter','')}`")
+            parts.append("**No results found.** The filters may be too restrictive — try broadening your search.")
+
+        if post_warnings:
+            for w in post_warnings:
+                if "0 rows" not in w:  # already handled above
+                    parts.append(f"\n> **Note:** {w}")
+
+        results_section = "\n".join(parts)
+
+        # ── Build DETAILS section (collapsible) ──
+        details = []
+        details.append(f"\n<details><summary>SQL Query & Pipeline Details</summary>\n")
+        details.append(f"**SQL:**\n```sql\n{sql}\n```\n")
+
+        if all_fixes:
+            details.append("**Auto-Fixes:**")
+            for f in all_fixes:
+                details.append(f"- {f}")
+            details.append("")
+
         conf = intent.get("confidence", 0)
         bar_len = int(conf * 20)
         bar = "\u2588" * bar_len + "\u2591" * (20 - bar_len)
-        parts.append(f"- Intent: `{intent.get('primary_intent','?')}` ({conf:.0%}) {bar} {intent.get('confidence_level','?').upper()}\n")
+
+        details.append("**Pipeline Trace:**")
+        details.append(f"1. **Query Analysis** — Intent: `{intent.get('primary_intent','?')}` ({conf:.0%}) {bar}")
+        if raw_q != norm_q:
+            details.append(f"   - Normalized: `{norm_q}`")
+        exps = normalizer.get("expansions", [])
+        if exps:
+            details.append(f"   - Expansions: {', '.join(str(e) for e in exps)}")
+        aliases = normalizer.get("alias_resolutions", [])
+        for a in aliases:
+            details.append(f"   - Alias: `{a.get('alias','')}` → `{a.get('sql_filter','')}`")
 
         if sl:
-            parts.append("**2. Schema Linking** (LLM)")
-            for t, c in sl.get("resolved_columns", {}).items():
-                parts.append(f"- `{t}` -> `{c}`")
+            mappings = [f"`{t}` → `{c}`" for t, c in sl.get("resolved_columns", {}).items()]
+            details.append(f"2. **Schema Linking** — {', '.join(mappings)}")
             ents = sl.get("detected_entities", [])
             if ents:
-                parts.append(f"- Entities: {', '.join(ents)}")
-            parts.append("")
+                details.append(f"   - Entities: {', '.join(ents)}")
 
-        parts.append(f"**3. Context Building** (CODE)\n- Prompt: ~{tok_est} tokens | Examples: {n_ex}/{tot_ex}\n")
-        parts.append(f"**4. SQL Generation** ({gen_method.upper()})")
-        if gen_method == "template":
-            parts.append("- Template matched -- LLM skipped")
-        parts.append("")
+        details.append(f"3. **Context** — ~{tok_est} tokens, {n_ex}/{tot_ex} examples")
+        details.append(f"4. **SQL Generation** — {gen_method.upper()}")
+        details.append(f"5. **Execution** — {len(rows)} rows, {exec_ms}ms")
 
-        parts.append("**5. Validation & Execution** (CODE + DB)")
         for ev in trace_events:
-            parts.append(f"- {ev}")
-        parts.append("\n---")
+            if "Executed" not in ev and "Validated" not in ev:
+                details.append(f"   - {ev}")
+
+        details.append(f"\n</details>")
+        details.append(f"\n<data_json>{data_json}</data_json>")
+
+        details_section = "\n".join(details)
 
         self.status = f"{len(rows)} rows in {exec_ms}ms | {gen_method}"
-        return Message(text="\n".join(parts))
+        return Message(text=results_section + "\n" + details_section)
