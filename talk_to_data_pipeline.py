@@ -546,6 +546,21 @@ Return ONLY JSON."""
         else:
             sections.append(f"\n**SQL Rules:**\nUse LIMIT {mr} to cap results.")
 
+        sections.append(
+            f"\n**Column Semantics (use these to resolve ambiguous terms):**\n"
+            f"  - 'part number' / 'item number' / 'article number' = ARTICLE_NO (use COUNT(DISTINCT ARTICLE_NO) to count parts)\n"
+            f"  - 'part description' / 'item description' = ARTICLE_DESCRIPTION\n"
+            f"  - 'quantity' / 'volume' / 'units' = QUANTITY\n"
+            f"  - 'spend' / 'amount' / 'cost' / 'value' = AMOUNT (always convert to EUR: AMOUNT / EXCH_RATE)\n"
+            f"  - 'supplier' / 'vendor' = SUPPLIER_NAME\n"
+            f"  - 'plant' / 'factory' / 'location' = PLANT_NAME\n"
+            f"  - 'commodity' / 'category' = COMMODITY or COMMODITY_DESCRIPTION\n"
+            f"  - 'material group' = \"Material Group\" or \"MG Description\"\n"
+            f"  - 'customer' / 'OEM' = CUSTOMER or OEM\n"
+            f"  - 'parent supplier' / 'group' = \"Parent Supplier\"\n"
+            f"  - 'payment terms' = PAYMENT_TERM + TERMS_OF_PAYMENT_DESCRIPTION\n"
+        )
+
         sections.append(f"\n**User Question:** {normalized_query}")
         sections.append(f"\n**Rules:**\n1. SELECT only\n2. Use exact column names\n3. GROUP BY for aggregations\n4. Return ONLY the SQL, no explanations\n5. For name/text filters (SUPPLIER_NAME, PLANT_NAME, etc.), use UPPER(col) LIKE UPPER('%value%') for partial matching, NOT exact equality\n6. Do NOT add filters the user did not ask for (e.g. do not add REGION filters unless the user mentions a region)")
 
