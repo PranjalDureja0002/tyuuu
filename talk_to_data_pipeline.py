@@ -472,8 +472,60 @@ Return ONLY JSON."""
             if ex_lines:
                 sections.append("\n**Examples:**\n" + "\n\n".join(ex_lines))
 
+        # Temporal context — give LLM today's date and fiscal year boundaries
+        from datetime import date as _date
+        _today = _date.today()
+        if _today.month >= 4:
+            _fy_start = _date(_today.year, 4, 1)
+            _fy_end = _date(_today.year + 1, 3, 31)
+            _prev_fy_start = _date(_today.year - 1, 4, 1)
+            _prev_fy_end = _date(_today.year, 3, 31)
+        else:
+            _fy_start = _date(_today.year - 1, 4, 1)
+            _fy_end = _date(_today.year, 3, 31)
+            _prev_fy_start = _date(_today.year - 2, 4, 1)
+            _prev_fy_end = _date(_today.year - 1, 3, 31)
+        _q = (_today.month - 4) % 12 // 3 + 1  # fiscal quarter 1-4
+        _fq_month = 4 + (_q - 1) * 3
+        _fq_year = _today.year if _fq_month >= 4 else _today.year
+        if _today.month < 4:
+            _fq_year = _today.year - 1
+            _fq_month = 4 + (_q - 1) * 3
+        _fq_start = _date(_fq_year if _fq_month <= 12 else _fq_year + 1, ((_fq_month - 1) % 12) + 1, 1)
+        _fq_end_month = _fq_start.month + 2
+        _fq_end_year = _fq_start.year
+        if _fq_end_month > 12:
+            _fq_end_month -= 12
+            _fq_end_year += 1
+        import calendar
+        _fq_end = _date(_fq_end_year, _fq_end_month, calendar.monthrange(_fq_end_year, _fq_end_month)[1])
+
+        temporal_ctx = (
+            f"\n**Temporal Context (use these facts for ALL date/time calculations, NEVER use SYSDATE):**\n"
+            f"  Today: {_today.isoformat()}\n"
+            f"  Fiscal year: April 1 to March 31\n"
+            f"  Current FY: DATE '{_fy_start}' to DATE '{_fy_end}'\n"
+            f"  Previous FY: DATE '{_prev_fy_start}' to DATE '{_prev_fy_end}'\n"
+            f"  Current fiscal quarter (Q{_q}): DATE '{_fq_start}' to DATE '{_fq_end}'\n"
+            f"  Date column: INVOICE_DATE\n"
+            f"  Fiscal year column: G_JAHR (VARCHAR 'YYYY')\n"
+            f"  Examples:\n"
+            f"    'current fiscal year' -> INVOICE_DATE >= DATE '{_fy_start}' AND INVOICE_DATE <= DATE '{_fy_end}'\n"
+            f"    'last fiscal year' -> INVOICE_DATE >= DATE '{_prev_fy_start}' AND INVOICE_DATE <= DATE '{_prev_fy_end}'\n"
+            f"    'last quarter' -> compute previous quarter from current Q{_q}\n"
+            f"    'last 6 months' -> INVOICE_DATE >= DATE '{_date(_today.year if _today.month > 6 else _today.year - 1, ((_today.month - 7) % 12) + 1, 1)}'\n"
+            f"    'in 2023' -> INVOICE_DATE >= DATE '2023-04-01' AND INVOICE_DATE <= DATE '2024-03-31'\n"
+        )
+        sections.append(temporal_ctx)
+
         if provider == "oracle":
-            sections.append(f"\n**Oracle SQL Rules:**\n1. Use FETCH FIRST {mr} ROWS ONLY (NEVER LIMIT)\n2. Use SYSDATE, NVL(), UPPER() for case-insensitive\n3. MANDATORY: EVERY query must include date filter: INVOICE_DATE > DATE '2024-04-01'")
+            sections.append(
+                f"\n**Oracle SQL Rules:**\n"
+                f"1. Use FETCH FIRST {mr} ROWS ONLY (NEVER LIMIT)\n"
+                f"2. Use NVL() where needed, UPPER() for case-insensitive text matching\n"
+                f"3. MANDATORY: EVERY query must include date filter: INVOICE_DATE > DATE '2024-04-01'\n"
+                f"4. NEVER use SYSDATE — use the concrete dates from Temporal Context above"
+            )
         else:
             sections.append(f"\n**SQL Rules:**\nUse LIMIT {mr} to cap results.")
 
