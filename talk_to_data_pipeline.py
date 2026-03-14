@@ -524,7 +524,15 @@ Return ONLY JSON."""
                 f"1. Use FETCH FIRST {mr} ROWS ONLY (NEVER LIMIT)\n"
                 f"2. Use NVL() where needed, UPPER() for case-insensitive text matching\n"
                 f"3. MANDATORY: EVERY query must include date filter: INVOICE_DATE > DATE '2024-04-01'\n"
-                f"4. NEVER use SYSDATE — use the concrete dates from Temporal Context above"
+                f"4. NEVER use SYSDATE — use the concrete dates from Temporal Context above\n"
+                f"5. CURRENCY STANDARDIZATION (MANDATORY):\n"
+                f"   - The AMOUNT column is in local currency (EXCH_CURRENCY). EXCH_RATE is the rate to EUR (EUR=1).\n"
+                f"   - ALWAYS use ROUND(AMOUNT / EXCH_RATE, 2) instead of raw AMOUNT for any spend/amount calculation.\n"
+                f"   - For SUM: SUM(ROUND(AMOUNT / EXCH_RATE, 2)) AS TOTAL_SPEND_EUR\n"
+                f"   - For AVG: ROUND(AVG(AMOUNT / EXCH_RATE), 2) AS AVG_SPEND_EUR\n"
+                f"   - Alias must end with _EUR to indicate currency (e.g. TOTAL_SPEND_EUR, AMOUNT_EUR)\n"
+                f"   - If user explicitly asks for a different currency (e.g. 'in USD'), convert accordingly\n"
+                f"   - NEVER use raw AMOUNT without dividing by EXCH_RATE"
             )
         else:
             sections.append(f"\n**SQL Rules:**\nUse LIMIT {mr} to cap results.")
@@ -697,6 +705,33 @@ Return ONLY JSON."""
             if new_sql != sql:
                 sql = new_sql
                 all_fixes.append("Wrapped view in dedup GROUP BY subquery")
+
+        # EUR currency standardization safety net
+        # Replace raw AMOUNT aggregations with AMOUNT / EXCH_RATE
+        sql_upper = sql.upper()
+        if "AMOUNT" in sql_upper and "EXCH_RATE" not in sql_upper:
+            for pat, repl, label in [
+                (r'\bSUM\s*\(\s*AMOUNT\s*\)', 'SUM(ROUND(AMOUNT / EXCH_RATE, 2))', 'SUM(AMOUNT)'),
+                (r'\bAVG\s*\(\s*AMOUNT\s*\)', 'ROUND(AVG(AMOUNT / EXCH_RATE), 2)', 'AVG(AMOUNT)'),
+                (r'\bMIN\s*\(\s*AMOUNT\s*\)', 'MIN(ROUND(AMOUNT / EXCH_RATE, 2))', 'MIN(AMOUNT)'),
+                (r'\bMAX\s*\(\s*AMOUNT\s*\)', 'MAX(ROUND(AMOUNT / EXCH_RATE, 2))', 'MAX(AMOUNT)'),
+            ]:
+                if re.search(pat, sql, re.IGNORECASE):
+                    sql = re.sub(pat, repl, sql, flags=re.IGNORECASE)
+                    all_fixes.append(f"EUR conversion: {label} → {repl}")
+            # Also fix standalone AMOUNT in SELECT (not in WHERE/GROUP BY)
+            # e.g. SELECT AMOUNT → SELECT ROUND(AMOUNT / EXCH_RATE, 2) AS AMOUNT_EUR
+            select_match = re.search(r'\bSELECT\b(.*?)\bFROM\b', sql, re.IGNORECASE | re.DOTALL)
+            if select_match:
+                select_part = select_match.group(1)
+                if re.search(r'(?<!\w)AMOUNT(?!\s*/\s*EXCH_RATE)(?!\w)', select_part, re.IGNORECASE):
+                    new_select = re.sub(
+                        r'(?<!\w)(AMOUNT)(?!\s*/\s*EXCH_RATE)(?!\w)',
+                        r'ROUND(\1 / EXCH_RATE, 2) AS AMOUNT_EUR',
+                        select_part, flags=re.IGNORECASE, count=1
+                    )
+                    sql = sql[:select_match.start(1)] + new_select + sql[select_match.end(1):]
+                    all_fixes.append("EUR conversion: AMOUNT → ROUND(AMOUNT / EXCH_RATE, 2)")
 
         # Anti-pattern fixes from knowledge
         anti_patterns = knowledge.get("anti_patterns", [])
