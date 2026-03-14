@@ -921,10 +921,6 @@ Return ONLY JSON."""
         else:
             md_table = ""
 
-        # ── Raw data JSON (for downstream components) ──
-        rows_list = [list(r) for r in rows]
-        data_json = json.dumps({"columns": columns, "rows": rows_list}, default=str)
-
         # ── Pipeline trace (metadata) ──
         raw_q = ctx.get("raw_query", "")
         norm_q = ctx.get("normalized_query", raw_q)
@@ -994,7 +990,6 @@ Return ONLY JSON."""
                 details.append(f"   - {ev}")
 
         details.append(f"\n</details>")
-        details.append(f"\n<data_json>{data_json}</data_json>")
 
         details_section = "\n".join(details)
 
